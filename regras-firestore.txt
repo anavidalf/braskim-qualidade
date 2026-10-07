@@ -1,0 +1,79 @@
+rules_version = '2';
+
+// Regras do Sistema de Gestão da Qualidade Braskim — Fase 1.
+// Quem entra: qualquer conta Google verificada do domínio braskim.com.br (sem lista de usuários nesta fase).
+// Nada é apagado: delete é bloqueado em tudo. Histórico (auditLogs) só aceita inclusão,
+// sempre com o e-mail real de quem gravou.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function email() { return request.auth.token.email.lower(); }
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && email().matches('.*@braskim[.]com[.]br$');
+    }
+    function stamped() { return request.resource.data.updatedBy == email(); }
+
+    match /config/{id} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && stamped();
+      allow delete: if false;
+    }
+
+    match /{col}/{id} {
+      allow read: if signedIn() && col in ['departments', 'activityTypes', 'procedures', 'responsaveis'];
+      allow create, update: if signedIn() && stamped() && col in ['departments', 'activityTypes', 'procedures', 'responsaveis'];
+      allow delete: if false;
+    }
+
+    match /activities/{id} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && stamped();
+      allow delete: if false;
+
+      match /executions/{eid} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.by == email();
+        // Anexar depois: só o campo de anexos, e só para acrescentar.
+        allow update: if signedIn() && (
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attachments'])
+            && request.resource.data.attachments.size() > resource.data.get('attachments', []).size())
+          // Corrigir quem fez / resultado / observação (data, vencimento e anexos não mudam).
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['date', 'validUntil', 'internal', 'company', 'performedBy', 'result', 'notes', 'attachments', 'editedAt', 'editedBy'])
+          // Excluir registro: só marca como excluído (o documento continua no banco e no histórico).
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deleted', 'deletedAt', 'deletedBy', 'deletedReason'])
+            && request.resource.data.deleted == true && request.resource.data.deletedBy == email())
+          // Reimportar o Anexo 01: atualiza o registro importado sem tocar nos anexos.
+          || (resource.data.get('imported', false) == true
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['attachments']))
+        );
+        allow delete: if false;
+      }
+    }
+
+    // Linha única de vencimento (alimenta Hoje, Atrasadas, Agenda, Painel, Alertas).
+    match /deadlines/{id} {
+      allow read, create, update: if signedIn();
+      allow delete: if false;
+    }
+
+    // RNC e SAC: o Painel já lê; o cadastro entra na Fase 2.
+    match /{col}/{id} {
+      allow read: if signedIn() && col in ['rncs', 'sacs', 'analises', 'specs', 'setores5s', 'criterios5s', 'checklists5s', 'auditorias5s', 'acoes', 'gut', 'ishikawa', 'fmea', 'cronogramasAuditoria', 'checklistsAuditoria', 'auditoriasInternas', 'fornecedores', 'qualificacoesFornecedor', 'requisitos', 'devolucoes', 'recolhimentos', 'produtos'];
+      allow create, update: if signedIn() && stamped() && col in ['rncs', 'sacs', 'analises', 'specs', 'setores5s', 'criterios5s', 'checklists5s', 'auditorias5s', 'acoes', 'gut', 'ishikawa', 'fmea', 'cronogramasAuditoria', 'checklistsAuditoria', 'auditoriasInternas', 'fornecedores', 'qualificacoesFornecedor', 'requisitos', 'devolucoes', 'recolhimentos', 'produtos'];
+      allow delete: if false;
+    }
+
+    match /auditLogs/{id} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.by == email();
+      allow update, delete: if false;
+    }
+
+    match /snapshots/{day} {
+      allow read, create: if signedIn();
+      allow update, delete: if false;
+    }
+  }
+}

@@ -1,19 +1,35 @@
 rules_version = '2';
 
 // Regras do Sistema de Gestão da Qualidade Braskim — Fase 1.
-// Quem entra: qualquer conta Google verificada do domínio braskim.com.br (sem lista de usuários nesta fase).
+// Quem entra: contas Google verificadas @braskim.com.br que estejam em acessos/{e-mail} (liberadas por um admin) ou sejam donas.
 // Nada é apagado: delete é bloqueado em tudo. Histórico (auditLogs) só aceita inclusão,
 // sempre com o e-mail real de quem gravou.
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function email() { return request.auth.token.email.lower(); }
-    function signedIn() {
+    function autenticado() {
       return request.auth != null
         && request.auth.token.email_verified == true
         && email().matches('.*@braskim[.]com[.]br$');
     }
+    // Donas: mesma lista do bloco BRASKIM_FIREBASE do index.html.
+    function dono() { return autenticado() && email() in ['ana.vidal@braskim.com.br', 'caroline.azevedo@braskim.com.br']; }
+    function acesso() { return /databases/$(database)/documents/acessos/$(email()); }
+    // Só entra quem está na lista de acessos (Configurações › Acessos) ou é dona.
+    function signedIn() { return dono() || (autenticado() && exists(acesso()) && get(acesso()).data.get('ativo', true) != false); }
+    function admin() { return dono() || (signedIn() && get(acesso()).data.get('admin', false) == true); }
     function stamped() { return request.resource.data.updatedBy == email(); }
+
+    // Lista de acessos: cada pessoa pode ler o próprio registro (para o login); admins liberam, mudam e removem.
+    // Donas não ficam na lista (estão fixas acima) e não podem ser alteradas por ela.
+    match /acessos/{e} {
+      allow get: if autenticado() && e == email();
+      allow read: if signedIn();
+      allow create, update: if admin() && e == request.resource.data.email && e.matches('.*@braskim[.]com[.]br$')
+        && request.resource.data.updatedBy == email();
+      allow delete: if admin();
+    }
 
     match /config/{id} {
       allow read: if signedIn();
